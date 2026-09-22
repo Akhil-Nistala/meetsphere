@@ -37,7 +37,7 @@ function HomeComponent() {
     <>
       <div className="navBar">
         <div style={{ display: "flex", alignItems: "center" }}>
-          <h2>Lumen</h2>
+          <h2>MeetSphere</h2>
         </div>
 
         <div style={{ display: "flex", alignItems: "center" }}>

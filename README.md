@@ -1,4 +1,4 @@
-# Lumen
+# MeetSphere
 
 A full-stack video conferencing app: users register/log in with a JWT-authenticated account, create or join a meeting by code, and talk over a peer-to-peer WebRTC video call with live chat, screen sharing, and a synced participant list. Meeting history (host, duration, participant count) is tracked per user with pagination.
 
@@ -20,7 +20,7 @@ No TypeScript, no frontend state management library beyond React Context.
 ## Repository layout
 
 ```
-lumen-meet/
+meetsphere/
 ├── package.json              # root: `npm run dev` runs both apps via concurrently
 ├── LICENSE                   # MIT
 ├── backend/

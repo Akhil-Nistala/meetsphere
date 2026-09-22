@@ -9,7 +9,7 @@ export default function LandingPage() {
     <div className="landingPageContainer">
       <nav>
         <div className="navHeader">
-          <h2>Lumen</h2>
+          <h2>MeetSphere</h2>
         </div>
         <div className="navlist">
           <p onClick={() => navigate("/auth")}>Register</p>

@@ -1,7 +1,7 @@
 {
-  "name": "lumen-meet-backend",
+  "name": "meetsphere-backend",
   "version": "1.0.0",
-  "description": "API and signaling server for Lumen Meet",
+  "description": "API and signaling server for MeetSphere",
   "main": "src/server.js",
   "type": "module",
   "scripts": {

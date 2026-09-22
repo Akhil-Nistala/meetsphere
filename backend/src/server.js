@@ -19,7 +19,7 @@ const start = async () => {
     connectToSocket(server);
 
     server.listen(PORT, () => {
-        console.log(`Lumen Meet server listening on port ${PORT}`);
+        console.log(`MeetSphere server listening on port ${PORT}`);
     });
 };
 
