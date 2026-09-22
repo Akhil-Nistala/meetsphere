@@ -10,13 +10,27 @@ import "../App.css";
 function HomeComponent() {
   const navigate = useNavigate();
   const [meetingCode, setMeetingCode] = useState("");
-  const { addToUserHistory } = useContext(AuthContext);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const { createMeeting, handleLogout } = useContext(AuthContext);
 
-  const handleJoinVideoCall = async () => {
+  const handleCreateMeeting = async () => {
+    setError("");
+    setCreating(true);
+    try {
+      const meeting = await createMeeting();
+      navigate(`/meeting/${meeting.meetingCode}`);
+    } catch (err) {
+      setError(err?.response?.data?.message ?? "Could not start a meeting");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleJoinMeeting = () => {
     const code = meetingCode.trim();
     if (!code) return;
-    await addToUserHistory(code);
-    navigate(`/${code}`);
+    navigate(`/meeting/${code}`);
   };
 
   return (
@@ -32,14 +46,7 @@ function HomeComponent() {
           </IconButton>
           <p>History</p>
 
-          <Button
-            onClick={() => {
-              localStorage.removeItem("token");
-              navigate("/auth");
-            }}
-          >
-            Logout
-          </Button>
+          <Button onClick={handleLogout}>Logout</Button>
         </div>
       </div>
 
@@ -48,17 +55,24 @@ function HomeComponent() {
           <div>
             <h2>Video calls made simple</h2>
 
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
               <TextField
                 onChange={(e) => setMeetingCode(e.target.value)}
+                value={meetingCode}
                 id="meeting-code"
                 label="Meeting Code"
                 variant="outlined"
+                onKeyDown={(e) => e.key === "Enter" && handleJoinMeeting()}
               />
-              <Button onClick={handleJoinVideoCall} variant="contained">
+              <Button onClick={handleJoinMeeting} variant="contained">
                 Join
               </Button>
+              <Button onClick={handleCreateMeeting} variant="outlined" disabled={creating}>
+                {creating ? "Starting…" : "New Meeting"}
+              </Button>
             </div>
+
+            {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
           </div>
         </div>
         <div className="rightPanel">

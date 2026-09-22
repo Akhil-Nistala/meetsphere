@@ -75,3 +75,35 @@
     align-items: center;
     padding-bottom: 12px;
 }
+
+.participantPanel {
+    position: absolute;
+    height: 90vh;
+    left: 0;
+    background: white;
+    border-radius: 10px;
+    width: 25vw;
+    padding-inline: 20px;
+    padding-block: 10px;
+    overflow-y: auto;
+}
+
+.participantRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-block: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.reconnectBanner {
+    position: absolute;
+    top: 0;
+    width: 100%;
+    text-align: center;
+    background: #d97500;
+    color: white;
+    padding: 6px;
+    font-size: 0.9rem;
+    z-index: 5;
+}

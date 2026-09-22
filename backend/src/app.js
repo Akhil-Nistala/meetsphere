@@ -1,40 +1,23 @@
 import "dotenv/config";
 import express from "express";
-import { createServer } from "node:http";
-import mongoose from "mongoose";
 import cors from "cors";
 
-import { connectToSocket } from "./controllers/socketManager.js";
-import userRoutes from "./routes/users.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+import meetingRoutes from "./routes/meeting.routes.js";
+import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 
 const app = express();
-const server = createServer(app);
-const io = connectToSocket(server);
 
-const PORT = process.env.PORT || 8000;
-const MONGO_URI = process.env.MONGO_URI;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "*";
-
-app.use(cors({ origin: CLIENT_ORIGIN }));
+app.use(cors({ origin: process.env.CLIENT_ORIGIN || "*" }));
 app.use(express.json({ limit: "40kb" }));
 app.use(express.urlencoded({ limit: "40kb", extended: true }));
 
-app.use("/api/v1/users", userRoutes);
+app.get("/health", (req, res) => res.status(200).json({ success: true, status: "ok" }));
 
-const start = async () => {
-    if (!MONGO_URI) {
-        throw new Error("MONGO_URI is not set. Copy .env.example to .env and fill it in.");
-    }
+app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/meetings", meetingRoutes);
 
-    const connectionDb = await mongoose.connect(MONGO_URI);
-    console.log(`MongoDB connected: ${connectionDb.connection.host}`);
+app.use(notFoundHandler);
+app.use(errorHandler);
 
-    server.listen(PORT, () => {
-        console.log(`Lumen Meet server listening on port ${PORT}`);
-    });
-};
-
-start().catch((err) => {
-    console.error("Failed to start server:", err.message);
-    process.exit(1);
-});
+export default app;

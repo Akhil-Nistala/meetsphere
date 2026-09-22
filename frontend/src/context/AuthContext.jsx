@@ -1,58 +1,98 @@
 import axios from "axios";
-import httpStatus from "http-status";
-import { createContext, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import apiBaseUrl from "../config/api";
 
 export const AuthContext = createContext(null);
 
-const client = axios.create({
-    baseURL: `${apiBaseUrl}/api/v1/users`
+const client = axios.create({ baseURL: `${apiBaseUrl}/api/v1` });
+
+client.interceptors.request.use((config) => {
+    const token = localStorage.getItem("token");
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
 });
 
 export const AuthProvider = ({ children }) => {
-    const [userData, setUserData] = useState(null);
+    const [userData, setUserData] = useState(() => {
+        const stored = localStorage.getItem("user");
+        return stored ? JSON.parse(stored) : null;
+    });
     const navigate = useNavigate();
 
-    const handleRegister = async (name, username, password) => {
-        const response = await client.post("/register", { name, username, password });
+    useEffect(() => {
+        const interceptorId = client.interceptors.response.use(
+            (response) => response,
+            (error) => {
+                if (error.response?.status === 401) {
+                    localStorage.removeItem("token");
+                    localStorage.removeItem("user");
+                    setUserData(null);
+                    navigate("/auth");
+                }
+                return Promise.reject(error);
+            }
+        );
 
-        if (response.status === httpStatus.CREATED) {
-            return response.data.message;
-        }
+        return () => client.interceptors.response.eject(interceptorId);
+    }, [navigate]);
+
+    const handleRegister = async (name, username, password) => {
+        const response = await client.post("/auth/register", { name, username, password });
+        return response.data.message;
     };
 
     const handleLogin = async (username, password) => {
-        const response = await client.post("/login", { username, password });
-
-        if (response.status === httpStatus.OK) {
-            localStorage.setItem("token", response.data.token);
-            navigate("/home");
-        }
+        const response = await client.post("/auth/login", { username, password });
+        localStorage.setItem("token", response.data.token);
+        localStorage.setItem("user", JSON.stringify(response.data.user));
+        setUserData(response.data.user);
+        navigate("/home");
     };
 
-    const getHistoryOfUser = async () => {
-        const response = await client.get("/get_all_activity", {
-            params: { token: localStorage.getItem("token") }
-        });
+    const handleLogout = () => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setUserData(null);
+        navigate("/auth");
+    };
+
+    const createMeeting = async () => {
+        const response = await client.post("/meetings");
+        return response.data.meeting;
+    };
+
+    const joinMeeting = async (meetingCode) => {
+        const response = await client.post(`/meetings/${meetingCode}/join`);
         return response.data;
     };
 
-    const addToUserHistory = async (meetingCode) => {
-        const response = await client.post("/add_to_activity", {
-            token: localStorage.getItem("token"),
-            meeting_code: meetingCode
-        });
-        return response;
+    const leaveMeeting = async (meetingCode) => {
+        await client.post(`/meetings/${meetingCode}/leave`);
     };
+
+    const endMeeting = async (meetingCode) => {
+        await client.post(`/meetings/${meetingCode}/end`);
+    };
+
+    const getHistory = useCallback(async (page = 1, limit = 10) => {
+        const response = await client.get("/meetings/history", { params: { page, limit } });
+        return response.data;
+    }, []);
 
     const data = {
-        userData, setUserData, addToUserHistory, getHistoryOfUser, handleRegister, handleLogin
+        userData,
+        handleRegister,
+        handleLogin,
+        handleLogout,
+        createMeeting,
+        joinMeeting,
+        leaveMeeting,
+        endMeeting,
+        getHistory
     };
 
-    return (
-        <AuthContext.Provider value={data}>
-            {children}
-        </AuthContext.Provider>
-    );
+    return <AuthContext.Provider value={data}>{children}</AuthContext.Provider>;
 };

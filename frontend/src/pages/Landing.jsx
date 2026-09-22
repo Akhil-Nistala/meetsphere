@@ -12,7 +12,6 @@ export default function LandingPage() {
           <h2>Lumen</h2>
         </div>
         <div className="navlist">
-          <p onClick={() => navigate("/auth")}>Join as Guest</p>
           <p onClick={() => navigate("/auth")}>Register</p>
           <div onClick={() => navigate("/auth")} role="button">
             <p>Login</p>

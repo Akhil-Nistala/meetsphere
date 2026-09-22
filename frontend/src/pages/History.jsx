@@ -4,59 +4,108 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import HomeIcon from "@mui/icons-material/Home";
-import { IconButton } from "@mui/material";
+import Chip from "@mui/material/Chip";
+import { Button, IconButton } from "@mui/material";
 import { AuthContext } from "../context/AuthContext";
 import withAuth from "../utils/withAuth";
 
+const PAGE_SIZE = 10;
+
+function formatDate(dateString) {
+  const date = new Date(dateString);
+  const day = date.getDate().toString().padStart(2, "0");
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const year = date.getFullYear();
+  return `${day}/${month}/${year} ${date.getHours().toString().padStart(2, "0")}:${date
+    .getMinutes()
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes === 0) return `${remainingSeconds}s`;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
 function History() {
-  const { getHistoryOfUser } = useContext(AuthContext);
+  const { getHistory } = useContext(AuthContext);
   const [meetings, setMeetings] = useState([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchHistory = async () => {
+      setLoading(true);
       try {
-        const history = await getHistoryOfUser();
-        setMeetings(history);
+        const response = await getHistory(page, PAGE_SIZE);
+        if (!cancelled) {
+          setMeetings(response.data);
+          setTotalPages(response.totalPages || 1);
+        }
       } catch {
-        setMeetings([]);
+        if (!cancelled) setMeetings([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
 
     fetchHistory();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    const day = date.getDate().toString().padStart(2, "0");
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
-    const year = date.getFullYear();
-
-    return `${day}/${month}/${year}`;
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [page, getHistory]);
 
   return (
-    <div>
+    <div style={{ paddingBottom: "40px" }}>
       <IconButton onClick={() => navigate("/home")}>
         <HomeIcon />
       </IconButton>
 
-      {meetings.length === 0 ? (
+      {loading ? (
+        <p style={{ paddingInline: "20px" }}>Loading…</p>
+      ) : meetings.length === 0 ? (
         <p style={{ paddingInline: "20px" }}>No meetings yet.</p>
       ) : (
-        meetings.map((meeting, i) => (
-          <Card key={meeting._id ?? i} variant="outlined" style={{ margin: "10px 20px" }}>
+        meetings.map((meeting) => (
+          <Card key={meeting.meetingCode} variant="outlined" style={{ margin: "10px 20px" }}>
             <CardContent>
-              <Typography sx={{ fontSize: 14 }} color="text.secondary" gutterBottom>
-                Code: {meeting.meetingCode}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <Typography sx={{ fontSize: 16, fontWeight: 600 }}>{meeting.meetingCode}</Typography>
+                <Chip
+                  label={meeting.status === "active" ? "Active" : "Ended"}
+                  color={meeting.status === "active" ? "success" : "default"}
+                  size="small"
+                />
+              </div>
+              <Typography sx={{ mt: 1 }} color="text.secondary">
+                Host: {meeting.host?.name ?? "Unknown"}
               </Typography>
-              <Typography sx={{ mb: 1.5 }} color="text.secondary">
-                Date: {formatDate(meeting.date)}
-              </Typography>
+              <Typography color="text.secondary">Started: {formatDate(meeting.startedAt)}</Typography>
+              <Typography color="text.secondary">Duration: {formatDuration(meeting.durationSeconds)}</Typography>
+              <Typography color="text.secondary">Participants: {meeting.participantCount}</Typography>
             </CardContent>
           </Card>
         ))
+      )}
+
+      {totalPages > 1 && (
+        <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "10px" }}>
+          <Button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </Button>
+          <Typography sx={{ alignSelf: "center" }}>
+            Page {page} of {totalPages}
+          </Typography>
+          <Button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            Next
+          </Button>
+        </div>
       )}
     </div>
   );
