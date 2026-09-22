@@ -15,27 +15,25 @@ lumen-meet/
 
 ## Getting started
 
-### 1. Backend
+Set up your env files first, then install and run both apps together from the root:
 
 ```bash
-cd backend
+cp backend/.env.example backend/.env    # then fill in MONGO_URI
+cp frontend/.env.example frontend/.env  # points to your backend URL
+
 npm install
-cp .env.example .env   # then fill in MONGO_URI
+npm run install:all
 npm run dev
 ```
 
-The server starts on `http://localhost:8000` by default.
+This runs the backend (`http://localhost:8000`) and frontend (`http://localhost:5173`) together.
 
-### 2. Frontend
+To run them separately instead:
 
 ```bash
-cd frontend
-npm install
-cp .env.example .env   # points to your backend URL
-npm run dev
+cd backend && npm install && npm run dev
+cd frontend && npm install && npm run dev
 ```
-
-The app starts on `http://localhost:5173` by default.
 
 ## Environment variables
 
