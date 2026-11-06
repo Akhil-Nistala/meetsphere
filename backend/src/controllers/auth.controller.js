@@ -24,16 +24,19 @@ const register = asyncHandler(async (req, res) => {
     res.status(201).json({ success: true, message: "User registered successfully" });
 });
 
+// Compared against when the username doesn't exist, so "unknown user" and
+// "wrong password" take about the same time and can't be told apart by timing.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
+
 const login = asyncHandler(async (req, res) => {
     const { username, password } = req.body;
 
     const user = await User.findOne({ username });
-    if (!user) {
-        throw new ApiError(404, "User not found");
-    }
 
-    const isPasswordCorrect = await bcrypt.compare(password, user.password);
-    if (!isPasswordCorrect) {
+    // Same status and message for both failure cases, so the endpoint can't be
+    // used to discover which usernames are registered.
+    const isPasswordCorrect = await bcrypt.compare(password, user?.password ?? DUMMY_PASSWORD_HASH);
+    if (!user || !isPasswordCorrect) {
         throw new ApiError(401, "Invalid username or password");
     }
 

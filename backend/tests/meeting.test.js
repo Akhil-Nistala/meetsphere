@@ -123,6 +123,33 @@ describe("POST /api/v1/meetings/:code/join", () => {
         expect(res.body.meeting.isHost).toBe(true);
         expect(res.body.participants).toHaveLength(1);
     });
+
+    it("returns the most recent messages, in chronological order", async () => {
+        mockMeeting.findOne.mockResolvedValue({
+            _id: "m1",
+            meetingCode: "abc-defg-hij",
+            host: { toString: () => "user1" },
+            status: "active",
+            startedAt: new Date()
+        });
+        mockParticipant.create.mockResolvedValue({});
+        mockParticipant.find.mockReturnValue(chainableQuery([]));
+
+        // The DB hands back newest-first because of the descending sort.
+        const messageQuery = chainableQuery([
+            { senderName: "Bob", text: "third" },
+            { senderName: "Alice", text: "second" },
+            { senderName: "Bob", text: "first" }
+        ]);
+        mockMessage.find.mockReturnValue(messageQuery);
+
+        const res = await request(app)
+            .post("/api/v1/meetings/abc-defg-hij/join")
+            .set("Authorization", authHeader());
+
+        expect(messageQuery.sort).toHaveBeenCalledWith({ createdAt: -1 });
+        expect(res.body.messages.map((m) => m.text)).toEqual(["first", "second", "third"]);
+    });
 });
 
 describe("POST /api/v1/meetings/:code/end", () => {

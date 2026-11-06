@@ -61,13 +61,17 @@ const joinMeeting = asyncHandler(async (req, res) => {
         name: req.user.name
     });
 
-    const [participants, messages] = await Promise.all([
+    // Newest-first + limit picks the most recent N messages (sorting
+    // ascending would return the *oldest* N); reverse back to chronological
+    // order so the chat panel reads top-to-bottom.
+    const [participants, latestMessages] = await Promise.all([
         Participant.find({ meeting: meeting._id, leftAt: null }).select("user name micOn cameraOn joinedAt"),
         Message.find({ meeting: meeting._id })
-            .sort({ createdAt: 1 })
+            .sort({ createdAt: -1 })
             .limit(RECENT_MESSAGE_LIMIT)
             .select("senderName text createdAt")
     ]);
+    const messages = latestMessages.reverse();
 
     res.status(200).json({
         success: true,
