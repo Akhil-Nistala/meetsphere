@@ -110,7 +110,13 @@ export const connectToSocket = (server) => {
             socket.to(meetingCode).emit("participant-joined", { socketId: socket.id, userId, name, micOn: true, cameraOn: true });
         });
 
+        // Only relay signaling between sockets in the same meeting — otherwise
+        // any authenticated user could push SDP/ICE at arbitrary socket ids.
         socket.on("signal", (toId, message) => {
+            const session = socketSessions[socket.id];
+            if (!session || toId === socket.id) return;
+            if (!connections[session.meetingCode]?.includes(toId)) return;
+
             io.to(toId).emit("signal", socket.id, message);
         });
 

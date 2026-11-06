@@ -92,13 +92,14 @@ describe("POST /api/v1/auth/login", () => {
         expect(res.status).toBe(401);
     });
 
-    it("returns 404 for an unknown username", async () => {
+    it("returns the same 401 for an unknown username as for a wrong password", async () => {
         mockUser.findOne.mockResolvedValue(null);
 
         const res = await request(app)
             .post("/api/v1/auth/login")
             .send({ username: "ghost", password: "password123" });
 
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(401);
+        expect(res.body.message).toBe("Invalid username or password");
     });
 });
