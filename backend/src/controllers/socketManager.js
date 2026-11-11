@@ -37,6 +37,11 @@ const removeFromRoom = async (io, socket) => {
 
     const { meetingCode, meetingId, userId } = session;
 
+    // Clear the session first so a concurrent handler can't treat this
+    // socket as still being in the room while the DB write below is pending.
+    delete socketSessions[socket.id];
+    socket.leave(meetingCode);
+
     if (connections[meetingCode]) {
         connections[meetingCode] = connections[meetingCode].filter((id) => id !== socket.id);
         if (connections[meetingCode].length === 0) delete connections[meetingCode];
@@ -48,8 +53,6 @@ const removeFromRoom = async (io, socket) => {
     io.to(meetingCode).emit("user-left", socket.id);
     io.to(meetingCode).emit("participant-left", { socketId: socket.id });
 
-    delete socketSessions[socket.id];
-
     // Best-effort: mark this participant's session as ended even if they
     // never explicitly clicked "Leave" (e.g. closed the tab, lost network).
     try {
@@ -60,6 +63,18 @@ const removeFromRoom = async (io, socket) => {
         );
     } catch (err) {
         console.error("Failed to record participant leave on disconnect:", err.message);
+    }
+};
+
+// Wraps a socket event handler so a thrown error or rejected promise is
+// logged (and optionally reported to the client) instead of becoming an
+// unhandled rejection.
+const safeHandler = (eventName, handler, onError) => async (...args) => {
+    try {
+        await handler(...args);
+    } catch (err) {
+        console.error(`Socket handler "${eventName}" failed:`, err.message);
+        onError?.(err);
     }
 };
 
@@ -76,14 +91,32 @@ export const connectToSocket = (server) => {
     io.on("connection", (socket) => {
         const { id: userId, name } = socket.data.user;
 
-        socket.on("join-room", async (payload) => {
+        const on = (eventName, handler, onError) =>
+            socket.on(eventName, safeHandler(eventName, handler, onError));
+
+        on("join-room", async (payload) => {
             const meetingCode = payload?.meetingCode;
-            if (!meetingCode) return;
+            if (typeof meetingCode !== "string" || !meetingCode) return;
+
+            // Already in this room — ignore the duplicate join.
+            if (socketSessions[socket.id]?.meetingCode === meetingCode) return;
 
             const meeting = await Meeting.findOne({ meetingCode, status: "active" });
             if (!meeting) {
                 socket.emit("room-error", { message: "Meeting not found or already ended" });
                 return;
+            }
+
+            // Re-check after the await: a concurrent join for the same room may
+            // have completed while the lookup was in flight.
+            if (socketSessions[socket.id]?.meetingCode === meetingCode) return;
+
+            // Switching rooms: leave the previous one first. Not awaited on purpose —
+            // removeFromRoom clears all in-memory state synchronously before its
+            // (best-effort) DB write, so the rest of this join runs without
+            // yielding and can't interleave with another join.
+            if (socketSessions[socket.id]) {
+                removeFromRoom(io, socket);
             }
 
             socket.join(meetingCode);
@@ -108,11 +141,11 @@ export const connectToSocket = (server) => {
             }
 
             socket.to(meetingCode).emit("participant-joined", { socketId: socket.id, userId, name, micOn: true, cameraOn: true });
-        });
+        }, () => socket.emit("room-error", { message: "Could not join meeting, please try again" }));
 
         // Only relay signaling between sockets in the same meeting — otherwise
         // any authenticated user could push SDP/ICE at arbitrary socket ids.
-        socket.on("signal", (toId, message) => {
+        on("signal", (toId, message) => {
             const session = socketSessions[socket.id];
             if (!session || toId === socket.id) return;
             if (!connections[session.meetingCode]?.includes(toId)) return;
@@ -120,7 +153,7 @@ export const connectToSocket = (server) => {
             io.to(toId).emit("signal", socket.id, message);
         });
 
-        socket.on("chat-message", async (payload) => {
+        on("chat-message", async (payload) => {
             const session = socketSessions[socket.id];
             if (!session) return;
 
@@ -144,7 +177,7 @@ export const connectToSocket = (server) => {
             }
         });
 
-        socket.on("media-state", (payload) => {
+        on("media-state", (payload) => {
             const session = socketSessions[socket.id];
             if (!session) return;
 
@@ -169,14 +202,12 @@ export const connectToSocket = (server) => {
             ).catch((err) => console.error("Failed to persist media state:", err.message));
         });
 
-        socket.on("leave-room", () => {
-            removeFromRoom(io, socket);
-        });
+        on("leave-room", () => removeFromRoom(io, socket));
 
         // The REST /meetings/:code/end call is what actually persists "ended"
         // state; this just lets the host notify everyone still connected so
         // their clients can hang up instead of talking to a dead room.
-        socket.on("end-meeting", async () => {
+        on("end-meeting", async () => {
             const session = socketSessions[socket.id];
             if (!session) return;
 
@@ -184,18 +215,26 @@ export const connectToSocket = (server) => {
             const meeting = await Meeting.findById(meetingId);
             if (!meeting || meeting.host.toString() !== userId) return;
 
+            // The room may have been torn down (or this socket moved) while
+            // findById was in flight.
+            if (socketSessions[socket.id]?.meetingCode !== meetingCode) return;
+
             io.to(meetingCode).emit("meeting-ended");
 
             for (const socketId of connections[meetingCode] || []) {
                 io.sockets.sockets.get(socketId)?.leave(meetingCode);
+                // Drop the session too, otherwise chat/media-state from these
+                // sockets would still pass the "in a room" check and be
+                // persisted against the ended meeting.
+                if (socketSessions[socketId]?.meetingCode === meetingCode) {
+                    delete socketSessions[socketId];
+                }
             }
             delete connections[meetingCode];
             delete roomParticipants[meetingCode];
         });
 
-        socket.on("disconnect", () => {
-            removeFromRoom(io, socket);
-        });
+        on("disconnect", () => removeFromRoom(io, socket));
     });
 
     return io;
