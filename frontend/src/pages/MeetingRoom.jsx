@@ -12,7 +12,7 @@ import StopScreenShareIcon from "@mui/icons-material/StopScreenShare";
 import ChatIcon from "@mui/icons-material/Chat";
 import GroupIcon from "@mui/icons-material/Group";
 import apiBaseUrl from "../config/api";
-import { AuthContext } from "../context/AuthContext";
+import { AuthContext, refreshAccessToken } from "../context/AuthContext";
 import withAuth from "../utils/withAuth";
 import styles from "../styles/meetingRoom.module.css";
 
@@ -41,7 +41,7 @@ const resetPeerConnections = () => {
 function MeetingRoom() {
     const { code: meetingCode } = useParams();
     const navigate = useNavigate();
-    const { userData, joinMeeting, leaveMeeting, endMeeting } = useContext(AuthContext);
+    const { userData, joinMeeting, leaveMeeting, endMeeting, expireSession } = useContext(AuthContext);
 
     var socketRef = useRef();
     let socketIdRef = useRef();
@@ -302,6 +302,21 @@ function MeetingRoom() {
             setConnectionStatus("reconnecting");
         });
 
+        // The server only checks the JWT at handshake time, so this fires when
+        // a (re)connection attempt is made with an expired access token.
+        // Socket.IO doesn't retry after a middleware rejection, so refresh
+        // the token and reconnect ourselves. The `auth` callback passed to
+        // io() reads the new token from localStorage on that attempt.
+        socket.on("connect_error", async (err) => {
+            if (socket.active || err.message !== "Invalid or expired token") return;
+            try {
+                await refreshAccessToken();
+                socket.connect();
+            } catch {
+                expireSession();
+            }
+        });
+
         socket.io.on("reconnect", () => {
             // A fresh transport-level connection gets a new socket id, and the
             // server has already dropped our old room membership — so instead
@@ -451,8 +466,11 @@ function MeetingRoom() {
             return;
         }
 
-        const token = localStorage.getItem("token");
-        socketRef.current = io(server_url, { auth: { token } });
+        // A callback rather than a static object, so each reconnect attempt
+        // sends the current (possibly just-refreshed) access token.
+        socketRef.current = io(server_url, {
+            auth: (cb) => cb({ token: localStorage.getItem("token") })
+        });
         registerSocketListeners(socketRef.current);
 
         // Only the very first connection needs this — reconnections are

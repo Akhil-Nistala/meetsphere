@@ -5,7 +5,8 @@ import apiBaseUrl from "../config/api";
 
 export const AuthContext = createContext(null);
 
-const client = axios.create({ baseURL: `${apiBaseUrl}/api/v1` });
+// withCredentials so the browser sends and stores the httpOnly refresh-token cookie.
+const client = axios.create({ baseURL: `${apiBaseUrl}/api/v1`, withCredentials: true });
 
 client.interceptors.request.use((config) => {
     const token = localStorage.getItem("token");
@@ -15,6 +16,32 @@ client.interceptors.request.use((config) => {
     return config;
 });
 
+// A 401 from these endpoints means bad credentials or a dead session, not an
+// expired access token, so it must never trigger a refresh-and-retry.
+const NO_REFRESH_PATHS = ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"];
+
+// Shared across callers, so a burst of parallel 401s (or a socket reconnect
+// racing an API call) sends exactly one /auth/refresh request. That matters:
+// refresh tokens are single-use, so a second concurrent refresh with the same
+// cookie would be rejected.
+let refreshPromise = null;
+
+export const refreshAccessToken = () => {
+    if (!refreshPromise) {
+        refreshPromise = client
+            .post("/auth/refresh")
+            .then((response) => {
+                localStorage.setItem("token", response.data.token);
+                localStorage.setItem("user", JSON.stringify(response.data.user));
+                return response.data.token;
+            })
+            .finally(() => {
+                refreshPromise = null;
+            });
+    }
+    return refreshPromise;
+};
+
 export const AuthProvider = ({ children }) => {
     const [userData, setUserData] = useState(() => {
         const stored = localStorage.getItem("user");
@@ -22,22 +49,42 @@ export const AuthProvider = ({ children }) => {
     });
     const navigate = useNavigate();
 
+    const expireSession = useCallback(() => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setUserData(null);
+        navigate("/auth");
+    }, [navigate]);
+
     useEffect(() => {
         const interceptorId = client.interceptors.response.use(
             (response) => response,
-            (error) => {
-                if (error.response?.status === 401) {
-                    localStorage.removeItem("token");
-                    localStorage.removeItem("user");
-                    setUserData(null);
-                    navigate("/auth");
+            async (error) => {
+                const original = error.config;
+                const shouldRefresh =
+                    error.response?.status === 401 &&
+                    original &&
+                    !original._retried &&
+                    !NO_REFRESH_PATHS.includes(original.url);
+
+                if (!shouldRefresh) {
+                    return Promise.reject(error);
                 }
-                return Promise.reject(error);
+
+                original._retried = true;
+                try {
+                    await refreshAccessToken();
+                } catch {
+                    expireSession();
+                    return Promise.reject(error);
+                }
+                // The request interceptor reattaches the new token from localStorage.
+                return client(original);
             }
         );
 
         return () => client.interceptors.response.eject(interceptorId);
-    }, [navigate]);
+    }, [expireSession]);
 
     const handleRegister = async (name, username, password) => {
         const response = await client.post("/auth/register", { name, username, password });
@@ -52,11 +99,14 @@ export const AuthProvider = ({ children }) => {
         navigate("/home");
     };
 
-    const handleLogout = () => {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-        setUserData(null);
-        navigate("/auth");
+    const handleLogout = async () => {
+        try {
+            // Revokes the refresh token on the server and clears its cookie.
+            await client.post("/auth/logout");
+        } catch {
+            // Still log out locally even if the server is unreachable.
+        }
+        expireSession();
     };
 
     const createMeeting = async () => {
@@ -87,6 +137,7 @@ export const AuthProvider = ({ children }) => {
         handleRegister,
         handleLogin,
         handleLogout,
+        expireSession,
         createMeeting,
         joinMeeting,
         leaveMeeting,
