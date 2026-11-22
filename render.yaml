@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: meetsphere-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      # The frontend proxies /api, so the refresh cookie is same-site.
+      - key: COOKIE_SAMESITE
+        value: lax
+      # Set these in the Render dashboard when creating the service.
+      - key: MONGO_URI
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false

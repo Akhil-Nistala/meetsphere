@@ -11,12 +11,12 @@ import ScreenShareIcon from "@mui/icons-material/ScreenShare";
 import StopScreenShareIcon from "@mui/icons-material/StopScreenShare";
 import ChatIcon from "@mui/icons-material/Chat";
 import GroupIcon from "@mui/icons-material/Group";
-import apiBaseUrl from "../config/api";
+import { socketUrl } from "../config/api";
 import { AuthContext, refreshAccessToken } from "../context/AuthContext";
 import withAuth from "../utils/withAuth";
 import styles from "../styles/meetingRoom.module.css";
 
-const server_url = apiBaseUrl;
+const server_url = socketUrl;
 
 // Keyed by remote socket id. Module-level (not state) because these are raw
 // WebRTC objects, not serializable/renderable data — React doesn't need to
