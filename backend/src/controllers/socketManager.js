@@ -24,7 +24,10 @@ const authenticateSocket = (socket, next) => {
     }
 
     try {
-        socket.data.user = jwt.verify(token, process.env.JWT_SECRET);
+        // Only the short-lived token from GET /auth/socket-token is accepted here.
+        const payload = jwt.verify(token, process.env.JWT_SECRET);
+        if (payload.purpose !== "socket") throw new Error("Wrong token type");
+        socket.data.user = payload;
         next();
     } catch {
         next(new Error("Invalid or expired token"));

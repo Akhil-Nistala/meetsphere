@@ -5,86 +5,43 @@ import apiBaseUrl from "../config/api";
 
 export const AuthContext = createContext(null);
 
-// withCredentials so the browser sends and stores the httpOnly refresh-token cookie.
+// The session JWT lives in an httpOnly cookie, so there's no token to attach
+// here: withCredentials makes the browser send (and accept) that cookie on
+// cross-origin requests (local dev, or a directly-called API).
 const client = axios.create({ baseURL: `${apiBaseUrl}/api/v1`, withCredentials: true });
 
-client.interceptors.request.use((config) => {
-    const token = localStorage.getItem("token");
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-});
-
-// A 401 from these endpoints means bad credentials or a dead session, not an
-// expired access token, so it must never trigger a refresh-and-retry.
-const NO_REFRESH_PATHS = ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"];
-
-// Shared across callers, so a burst of parallel 401s (or a socket reconnect
-// racing an API call) sends exactly one /auth/refresh request. That matters:
-// refresh tokens are single-use, so a second concurrent refresh with the same
-// cookie would be rejected.
-let refreshPromise = null;
-
-export const refreshAccessToken = () => {
-    if (!refreshPromise) {
-        refreshPromise = client
-            .post("/auth/refresh")
-            .then((response) => {
-                localStorage.setItem("token", response.data.token);
-                localStorage.setItem("user", JSON.stringify(response.data.user));
-                return response.data.token;
-            })
-            .finally(() => {
-                refreshPromise = null;
-            });
-    }
-    return refreshPromise;
-};
-
 export const AuthProvider = ({ children }) => {
-    const [userData, setUserData] = useState(() => {
-        const stored = localStorage.getItem("user");
-        return stored ? JSON.parse(stored) : null;
-    });
+    // The page can't read the cookie, so on load we ask the API who we are.
+    const [userData, setUserData] = useState(null);
+    const [checking, setChecking] = useState(true);
     const navigate = useNavigate();
 
+    useEffect(() => {
+        client
+            .get("/auth/me")
+            .then((response) => setUserData(response.data.user))
+            .catch(() => setUserData(null))
+            .finally(() => setChecking(false));
+    }, []);
+
     const expireSession = useCallback(() => {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
         setUserData(null);
         navigate("/auth");
     }, [navigate]);
 
+    // If any request comes back 401 (cookie expired or cleared), drop the
+    // user so withAuth sends them to the login page.
     useEffect(() => {
         const interceptorId = client.interceptors.response.use(
             (response) => response,
-            async (error) => {
-                const original = error.config;
-                const shouldRefresh =
-                    error.response?.status === 401 &&
-                    original &&
-                    !original._retried &&
-                    !NO_REFRESH_PATHS.includes(original.url);
-
-                if (!shouldRefresh) {
-                    return Promise.reject(error);
-                }
-
-                original._retried = true;
-                try {
-                    await refreshAccessToken();
-                } catch {
-                    expireSession();
-                    return Promise.reject(error);
-                }
-                // The request interceptor reattaches the new token from localStorage.
-                return client(original);
+            (error) => {
+                if (error.response?.status === 401) setUserData(null);
+                return Promise.reject(error);
             }
         );
 
         return () => client.interceptors.response.eject(interceptorId);
-    }, [expireSession]);
+    }, []);
 
     const handleRegister = async (name, username, password) => {
         const response = await client.post("/auth/register", { name, username, password });
@@ -93,21 +50,27 @@ export const AuthProvider = ({ children }) => {
 
     const handleLogin = async (username, password) => {
         const response = await client.post("/auth/login", { username, password });
-        localStorage.setItem("token", response.data.token);
-        localStorage.setItem("user", JSON.stringify(response.data.user));
         setUserData(response.data.user);
         navigate("/home");
     };
 
     const handleLogout = async () => {
         try {
-            // Revokes the refresh token on the server and clears its cookie.
+            // Clears the httpOnly cookie, which only the server can do.
             await client.post("/auth/logout");
         } catch {
             // Still log out locally even if the server is unreachable.
         }
         expireSession();
     };
+
+    // A one-minute token for the Socket.IO handshake. The socket server is
+    // reached directly (the /api proxy can't carry WebSockets), so the cookie
+    // isn't sent there; this request goes through the proxy, where it is.
+    const getSocketToken = useCallback(async () => {
+        const response = await client.get("/auth/socket-token");
+        return response.data.token;
+    }, []);
 
     const createMeeting = async () => {
         const response = await client.post("/meetings");
@@ -134,10 +97,12 @@ export const AuthProvider = ({ children }) => {
 
     const data = {
         userData,
+        checking,
         handleRegister,
         handleLogin,
         handleLogout,
         expireSession,
+        getSocketToken,
         createMeeting,
         joinMeeting,
         leaveMeeting,

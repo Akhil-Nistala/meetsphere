@@ -10,7 +10,7 @@ This README is meant to be self-sufficient — a reader (human or agent) should 
 | --- | --- |
 | Frontend | React 19, Vite, React Router 7, MUI 9, Axios, Socket.IO client |
 | Backend | Node.js (ESM), Express 4, Socket.IO 4, Mongoose 8 (MongoDB) |
-| Auth | JWT (7-day expiry) + bcrypt-hashed passwords |
+| Auth | JWT (7-day expiry) in an httpOnly cookie + bcrypt-hashed passwords |
 | Validation | Zod (HTTP request bodies/params/query + Socket.IO payloads) |
 | Video | WebRTC (`RTCPeerConnection`), STUN-only (Google's public STUN server), signaling relayed over Socket.IO |
 | Testing | Jest + Supertest (backend), model layer mocked — no live DB needed to run tests |
@@ -36,11 +36,11 @@ meetsphere/
 │       ├── server.js                     # entry point: connects Mongo, boots HTTP + Socket.IO, calls app.listen
 │       ├── config/db.js                  # mongoose.connect wrapper
 │       ├── controllers/
-│       │   ├── auth.controller.js        # register / login (issues JWTs)
+│       │   ├── auth.controller.js        # register / login / logout / me / socket-token
 │       │   ├── meeting.controller.js     # create / join / leave / end / history
 │       │   └── socketManager.js          # all Socket.IO event handling (signaling, chat, presence)
 │       ├── middleware/
-│       │   ├── auth.middleware.js        # requireAuth — verifies the JWT on protected REST routes
+│       │   ├── auth.middleware.js        # requireAuth — verifies the cookie's JWT on protected REST routes
 │       │   ├── validate.middleware.js    # Zod-schema request validator
 │       │   └── errorHandler.js           # centralized error handler + 404 handler
 │       ├── models/
@@ -68,8 +68,8 @@ meetsphere/
         ├── App.css             # Landing + Home page styles (global, not module-scoped)
         ├── index.css           # App-wide resets/fonts
         ├── config/api.js       # Reads VITE_API_URL, exported as the backend base URL
-        ├── context/AuthContext.jsx  # Axios client (attaches JWT via interceptor) + auth/meeting API calls
-        ├── utils/withAuth.jsx  # HOC: redirects to /auth if no token in localStorage
+        ├── context/AuthContext.jsx  # Axios client (withCredentials) + auth/meeting API calls
+        ├── utils/withAuth.jsx  # HOC: shows a loader until /auth/me answers, redirects to /auth if logged out
         ├── pages/
         │   ├── Landing.jsx       # "/" — marketing page, links to /auth
         │   ├── Authentication.jsx  # "/auth" — login + register form (MUI)
@@ -82,14 +82,14 @@ meetsphere/
 
 ## How it fits together (request/data flow)
 
-1. **Register/Login** (`Authentication.jsx` → `AuthContext` → `POST /api/v1/auth/register` or `/login`) — on success, `login` returns a JWT (`{ id, username, name }` payload, 7-day expiry) plus the user's profile. The frontend stores both in `localStorage` and an Axios request interceptor (`AuthContext.jsx`) attaches `Authorization: Bearer <token>` to every subsequent API call automatically. A response interceptor watches for `401`s globally: on one, it clears `localStorage` and redirects to `/auth` — so an expired/invalid token self-heals into a clean login screen instead of every page needing its own error handling for that case.
-2. **Route protection** — `Home.jsx`, `History.jsx`, and `MeetingRoom.jsx` are wrapped in `withAuth()`, a HOC that checks `localStorage["token"]` on mount and redirects to `/auth` if it's missing. This is a client-side UX guard only; the real enforcement is server-side (`requireAuth` middleware verifies the JWT signature on every `/api/v1/meetings/*` route, and the Socket.IO server verifies it again at the handshake — see below).
+1. **Register/Login** (`Authentication.jsx` → `AuthContext` → `POST /api/v1/auth/register` or `/login`) — on success, `login` signs a JWT (`{ id, username, name }` payload, 7-day expiry) and sets it as an **httpOnly cookie** named `token` (`Secure` in production, `SameSite=Lax`). The token is never in a response body, so page JavaScript (and any XSS bug) can't read it. The Axios client uses `withCredentials: true` so the browser sends the cookie on every API call. Because the page can't read the cookie, `AuthProvider` calls `GET /api/v1/auth/me` on load to learn who is logged in. A response interceptor watches for `401`s globally and clears the user, so an expired session falls back to a clean login screen. `POST /api/v1/auth/logout` clears the cookie.
+2. **Route protection** — `Home.jsx`, `History.jsx`, and `MeetingRoom.jsx` are wrapped in `withAuth()`, a HOC that shows a loader until `/auth/me` answers and redirects to `/auth` if no one is logged in. This is a client-side UX guard only; the real enforcement is server-side (`requireAuth` middleware verifies the cookie's JWT on every `/api/v1/meetings/*` route, and the Socket.IO server verifies its own token at the handshake — see below).
 3. **Creating a meeting** — `Home.jsx`'s "New Meeting" button calls `POST /api/v1/meetings`, which generates a unique `meetingCode` (`generateMeetingCode.js`, retried up to 5 times against the DB to avoid collisions) and creates a `Meeting` document with `host = <caller>`, `status: "active"`, `startedAt: now`. The frontend then navigates to `/meeting/:code`.
 4. **Joining a meeting** — Whether you're the host or someone who typed in a code, entering `/meeting/:code` shows a lobby (camera/mic preview). Clicking "Join Meeting" calls `POST /api/v1/meetings/:code/join`, which:
    - 404s if the code doesn't exist, 410s if the meeting has already ended,
    - creates a **new** `Participant` document for this session (see [Design note: why a new record per join](#design-note-why-a-new-participant-record-per-join)),
    - returns the current active-participant roster and the last 50 persisted chat messages so a (re)joining client isn't starting from a blank slate.
-   Only after this REST call succeeds does the client open a Socket.IO connection (JWT passed via `socket.handshake.auth.token`, verified server-side by an `io.use()` middleware before any event is processed) and emit `join-room` to enter the real-time mesh.
+   Only after this REST call succeeds does the client open a Socket.IO connection and emit `join-room` to enter the real-time mesh. The socket connects to the backend directly (the frontend host's `/api` proxy can't carry WebSockets), so the session cookie isn't sent with it. Instead, before every connection attempt the client fetches a one-minute socket token from `GET /api/v1/auth/socket-token` (which goes through the proxy, with the cookie) and passes it in `socket.handshake.auth.token`. An `io.use()` middleware verifies it before any event is processed.
 5. **The call itself (`MeetingRoom.jsx`)** — a manual mesh-topology WebRTC implementation, keyed by `meetingCode` (not the raw URL, which was the old, more fragile behavior):
    - The server (`socketManager.js`) tracks room membership in memory (`connections[meetingCode]`, `roomParticipants[meetingCode]`) and broadcasts `user-joined`/`participant-joined` to the room.
    - Each client creates one `RTCPeerConnection` per other participant, exchanges SDP offers/answers and ICE candidates via the `signal` event (relayed peer-to-peer through the server, not stored), and attaches local media via the **deprecated** `addStream`/`onaddstream` APIs (see [Known gaps](#known-gaps--tradeoffs)).
@@ -105,14 +105,17 @@ Each call to `/meetings/:code/join` inserts a new `Participant` document rather 
 
 ## Backend API contract
 
-**`/api/v1/auth`** (no auth required)
+**`/api/v1/auth`**
 
 | Method | Path | Body | Success | Failure |
 | --- | --- | --- | --- | --- |
 | POST | `/register` | `{ name, username, password }` (Zod-validated: username ≥3 chars, password ≥6 chars) | `201 { success, message }` | `400` validation, `409` username taken |
-| POST | `/login` | `{ username, password }` | `200 { success, token, user: { id, username, name } }` | `400` validation, `404` no such user, `401` wrong password |
+| POST | `/login` | `{ username, password }` | `200 { success, user: { id, username, name } }` + httpOnly `token` cookie | `400` validation, `401` wrong username or password |
+| POST | `/logout` | — | `200 { success, message }`; clears the cookie | — |
+| GET | `/me` | — (cookie) | `200 { success, user: { id, username, name } }` | `401` not logged in |
+| GET | `/socket-token` | — (cookie) | `200 { success, token }`: a one-minute JWT for the Socket.IO handshake | `401` not logged in |
 
-**`/api/v1/meetings`** (all routes require `Authorization: Bearer <token>`)
+**`/api/v1/meetings`** (all routes require the `token` cookie)
 
 | Method | Path | Body / Query | Success | Failure |
 | --- | --- | --- | --- | --- |
@@ -126,7 +129,7 @@ Every error response has the shape `{ success: false, message, errors? }` (`erro
 
 ## Socket.IO protocol (`backend/src/controllers/socketManager.js`)
 
-**Handshake auth:** the client connects with `io(url, { auth: { token } })`; an `io.use()` middleware verifies the JWT before any event handler runs, and rejects the connection outright if it's missing/invalid. `socket.data.user` (`{ id, username, name }`) is then trusted for the lifetime of that connection.
+**Handshake auth:** the client connects with `io(url, { auth: callback })`, where the callback fetches a fresh one-minute token from `/auth/socket-token` for every (re)connection attempt. An `io.use()` middleware verifies the JWT (and that its `purpose` is `"socket"`) before any event handler runs, and rejects the connection outright if it's missing/invalid. `socket.data.user` (`{ id, username, name }`) is then trusted for the lifetime of that connection.
 
 Live room membership state is entirely in-memory (`connections`, `roomParticipants`, `socketSessions`) — restarting the backend drops active *signaling* state, but `Participant`/`Message`/`Meeting` documents already written to MongoDB are unaffected.
 
@@ -164,6 +167,7 @@ All four have Mongoose `timestamps: true`; `Meeting` and `Participant`/`Message`
 | `MONGO_URI` | *(required)* | MongoDB connection string |
 | `CLIENT_ORIGIN` | `*` | Allowed CORS origin for both the Express API and Socket.IO |
 | `JWT_SECRET` | *(required)* | Signing secret for auth tokens — `server.js` refuses to start without it |
+| `COOKIE_SAMESITE` | `lax` in dev, `none` in production | `SameSite` for the auth cookie; `render.yaml` sets `lax` because Vercel proxies `/api` on the same site |
 
 **`frontend/.env`** (copy from `frontend/.env.example`)
 
@@ -193,7 +197,7 @@ cd backend
 npm test
 ```
 
-`backend/tests/*.test.js` use Jest + Supertest against the exported Express `app` (from `src/app.js`, which never calls `.listen()`), with the Mongoose model layer replaced by `jest.unstable_mockModule` mocks. This keeps the suite fast and independent of a live database while still exercising the real HTTP layer: routing, validation middleware, auth middleware, controller logic, and error handling all run for real — only `User.findOne`, `Meeting.create`, etc. are stubbed. Covers: registration (success/duplicate/invalid input), login (success/wrong password/unknown user), the auth middleware (missing/garbage token), meeting create/join/end (including the 404/410/403 edge cases), and paginated history.
+`backend/tests/*.test.js` use Jest + Supertest against the exported Express `app` (from `src/app.js`, which never calls `.listen()`), with the Mongoose model layer replaced by `jest.unstable_mockModule` mocks. This keeps the suite fast and independent of a live database while still exercising the real HTTP layer: routing, validation middleware, auth middleware, controller logic, and error handling all run for real — only `User.findOne`, `Meeting.create`, etc. are stubbed. Covers: registration (success/duplicate/invalid input), login (success/wrong password/unknown user), the session cookie (httpOnly, never in the body, 7-day JWT, logout, `/me`, socket token), the auth middleware (missing/garbage cookie), meeting create/join/end (including the 404/410/403 edge cases), and paginated history.
 
 This was also manually verified end-to-end against a real local MongoDB instance (register → login → create meeting → join → leave → rejoin → end → history, plus a two-client Socket.IO run through join-room/chat-message/media-state/disconnect/end-meeting) while building it — worth knowing if you're deciding whether to trust the mocked suite alone or also want an integration pass. A natural next step for CI would be adding `mongodb-memory-server` for a true integration-test tier on top of these.
 
@@ -201,7 +205,7 @@ This was also manually verified end-to-end against a real local MongoDB instance
 
 Pre-existing, deliberate tradeoffs — listed so a future contributor (or agent) doesn't need to rediscover them by reading every file:
 
-- **JWTs aren't revocable.** They're stateless by design (no DB lookup on every request), which means there's no logout-everywhere/revoke-this-token capability — a leaked token stays valid for the rest of its 7-day life. A refresh-token + short-lived-access-token scheme, or a server-side denylist, would be the next step if this mattered in production.
+- **JWTs aren't revocable.** They're stateless by design (no DB lookup on every request), which means there's no logout-everywhere/revoke-this-token capability — logout clears the cookie in that browser, but a copied token stays valid for the rest of its 7-day life. Short-lived access tokens with refresh tokens, or a server-side session store, would be the next step if this mattered in production.
 - **Meeting codes are unauthenticated invite links, effectively.** Anyone who knows/guesses a meeting code and has *any* valid account can join — there's no host approval / waiting room / per-meeting allowlist.
 - **WebRTC uses the deprecated `addStream`/`onaddstream` API pair** instead of `addTrack`/`ontrack`. Still functional in current Chrome/Firefox/Safari but removed from the spec; migrating needs live multi-browser testing since track-level renegotiation behaves differently.
 - **STUN only, no TURN server** — calls between peers on restrictive/symmetric NATs may fail to establish a direct connection. Adding a TURN server (e.g. coturn, or a managed provider) would fix this.
@@ -213,5 +217,5 @@ Pre-existing, deliberate tradeoffs — listed so a future contributor (or agent)
 ## Notable implementation choices already made (so they aren't "rediscovered" as bugs)
 
 - `bcryptjs` is used instead of native `bcrypt` deliberately — it avoids a native build step (no node-gyp/Python toolchain needed) and sidesteps a critical transitive vulnerability that was present in `bcrypt`'s `@mapbox/node-pre-gyp` → `tar` dependency chain at the time this project was set up. Functionally equivalent API.
-- Socket.IO CORS config does **not** set `credentials: true` — the app doesn't use cookies (the JWT is sent via `socket.handshake.auth`, not a cookie), so enabling credentialed CORS would be unused surface area, and is invalid to combine with a wildcard origin per the CORS spec anyway.
+- Socket.IO CORS config does **not** set `credentials: true` — the socket doesn't use the cookie (its short-lived JWT is sent via `socket.handshake.auth`), so enabling credentialed CORS would be unused surface area, and is invalid to combine with a wildcard origin per the CORS spec anyway.
 - `app.js` and `server.js` are split specifically so the Express app is importable without side effects (binding a port, connecting to Mongo) — that's what lets `tests/*.test.js` use Supertest against it directly.

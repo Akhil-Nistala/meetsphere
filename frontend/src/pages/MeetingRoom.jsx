@@ -12,7 +12,7 @@ import StopScreenShareIcon from "@mui/icons-material/StopScreenShare";
 import ChatIcon from "@mui/icons-material/Chat";
 import GroupIcon from "@mui/icons-material/Group";
 import { socketUrl } from "../config/api";
-import { AuthContext, refreshAccessToken } from "../context/AuthContext";
+import { AuthContext } from "../context/AuthContext";
 import withAuth from "../utils/withAuth";
 import styles from "../styles/meetingRoom.module.css";
 
@@ -41,7 +41,7 @@ const resetPeerConnections = () => {
 function MeetingRoom() {
     const { code: meetingCode } = useParams();
     const navigate = useNavigate();
-    const { userData, joinMeeting, leaveMeeting, endMeeting, expireSession } = useContext(AuthContext);
+    const { userData, joinMeeting, leaveMeeting, endMeeting, expireSession, getSocketToken } = useContext(AuthContext);
 
     var socketRef = useRef();
     let socketIdRef = useRef();
@@ -302,19 +302,11 @@ function MeetingRoom() {
             setConnectionStatus("reconnecting");
         });
 
-        // The server only checks the JWT at handshake time, so this fires when
-        // a (re)connection attempt is made with an expired access token.
-        // Socket.IO doesn't retry after a middleware rejection, so refresh
-        // the token and reconnect ourselves. The `auth` callback passed to
-        // io() reads the new token from localStorage on that attempt.
-        socket.on("connect_error", async (err) => {
-            if (socket.active || err.message !== "Invalid or expired token") return;
-            try {
-                await refreshAccessToken();
-                socket.connect();
-            } catch {
-                expireSession();
-            }
+        // A rejected handshake (socket.active is false) means the session
+        // itself is gone: the `auth` callback below couldn't get a socket
+        // token. Plain network errors keep socket.active true and retry.
+        socket.on("connect_error", () => {
+            if (!socket.active) expireSession();
         });
 
         socket.io.on("reconnect", () => {
@@ -466,10 +458,14 @@ function MeetingRoom() {
             return;
         }
 
-        // A callback rather than a static object, so each reconnect attempt
-        // sends the current (possibly just-refreshed) access token.
+        // A callback rather than a static object, so every (re)connect attempt
+        // fetches a fresh one-minute socket token using the session cookie.
         socketRef.current = io(server_url, {
-            auth: (cb) => cb({ token: localStorage.getItem("token") })
+            auth: (cb) => {
+                getSocketToken()
+                    .then((token) => cb({ token }))
+                    .catch(() => cb({}));
+            }
         });
         registerSocketListeners(socketRef.current);
 

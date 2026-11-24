@@ -40,9 +40,10 @@ const chainableQuery = (result) => {
     return query;
 };
 
-const authHeader = (overrides = {}) => {
+// The session JWT travels in the httpOnly "token" cookie.
+const authCookie = (overrides = {}) => {
     const token = jwt.sign({ id: "user1", username: "alice", name: "Alice", ...overrides }, process.env.JWT_SECRET);
-    return `Bearer ${token}`;
+    return `token=${token}`;
 };
 
 describe("auth middleware", () => {
@@ -52,7 +53,7 @@ describe("auth middleware", () => {
     });
 
     it("rejects requests with a garbage token", async () => {
-        const res = await request(app).post("/api/v1/meetings").set("Authorization", "Bearer not-a-real-token");
+        const res = await request(app).post("/api/v1/meetings").set("Cookie", "token=not-a-real-token");
         expect(res.status).toBe(401);
     });
 });
@@ -68,7 +69,7 @@ describe("POST /api/v1/meetings", () => {
             startedAt: new Date()
         });
 
-        const res = await request(app).post("/api/v1/meetings").set("Authorization", authHeader());
+        const res = await request(app).post("/api/v1/meetings").set("Cookie", authCookie());
 
         expect(res.status).toBe(201);
         expect(res.body.success).toBe(true);
@@ -87,7 +88,7 @@ describe("POST /api/v1/meetings/:code/join", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/nope-nope-nope/join")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(404);
     });
@@ -97,7 +98,7 @@ describe("POST /api/v1/meetings/:code/join", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/abc-defg-hij/join")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(410);
     });
@@ -116,7 +117,7 @@ describe("POST /api/v1/meetings/:code/join", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/abc-defg-hij/join")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
@@ -145,7 +146,7 @@ describe("POST /api/v1/meetings/:code/join", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/abc-defg-hij/join")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(messageQuery.sort).toHaveBeenCalledWith({ createdAt: -1 });
         expect(res.body.messages.map((m) => m.text)).toEqual(["first", "second", "third"]);
@@ -162,7 +163,7 @@ describe("POST /api/v1/meetings/:code/end", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/abc-defg-hij/end")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(200);
         expect(mockMeeting.updateOne).toHaveBeenCalled();
@@ -174,7 +175,7 @@ describe("POST /api/v1/meetings/:code/end", () => {
 
         const res = await request(app)
             .post("/api/v1/meetings/abc-defg-hij/end")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(403);
         expect(mockMeeting.updateOne).not.toHaveBeenCalled();
@@ -203,7 +204,7 @@ describe("GET /api/v1/meetings/history", () => {
 
         const res = await request(app)
             .get("/api/v1/meetings/history?page=1&limit=10")
-            .set("Authorization", authHeader());
+            .set("Cookie", authCookie());
 
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
