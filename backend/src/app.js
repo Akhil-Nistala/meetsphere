@@ -14,8 +14,10 @@ const app = express();
 // own origin is reflected back instead (fine for local dev; set CLIENT_ORIGIN in prod).
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || true, credentials: true }));
 app.use(cookieParser());
+// JSON only, no form-encoded bodies: an HTML form on another site can't send
+// JSON, and a cross-site fetch with JSON needs a CORS preflight that only
+// the allowed origin passes. Part of the CSRF defence, alongside SameSite=Lax.
 app.use(express.json({ limit: "40kb" }));
-app.use(express.urlencoded({ limit: "40kb", extended: true }));
 
 app.get("/health", (req, res) => res.status(200).json({ success: true, status: "ok" }));
 

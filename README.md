@@ -22,6 +22,7 @@ No TypeScript, no frontend state management library beyond React Context.
 ```
 meetsphere/
 ├── package.json              # root: `npm run dev` runs both apps via concurrently
+├── render.yaml               # Render blueprint for the API
 ├── LICENSE                   # MIT
 ├── backend/
 │   ├── .env.example          # PORT, MONGO_URI, CLIENT_ORIGIN, JWT_SECRET
@@ -29,11 +30,11 @@ meetsphere/
 │   ├── package.json
 │   ├── tests/
 │   │   ├── setup.js                      # sets JWT_SECRET/CLIENT_ORIGIN for the test env
-│   │   ├── auth.test.js                  # register/login, mocked User model
+│   │   ├── auth.test.js                  # register/login/logout/me/socket-token, mocked User model
 │   │   └── meeting.test.js               # create/join/end/history, mocked Meeting/Participant/Message
 │   └── src/
-│       ├── app.js                        # Express app (routes + middleware), exported for tests — no listen()
-│       ├── server.js                     # entry point: connects Mongo, boots HTTP + Socket.IO, calls app.listen
+│       ├── app.js                        # Express app (CORS, cookies, JSON-only body parsing, routes), exported for tests — no listen()
+│       ├── server.js                     # entry point: connects Mongo, creates the HTTP server, attaches Socket.IO, listens
 │       ├── config/db.js                  # mongoose.connect wrapper
 │       ├── controllers/
 │       │   ├── auth.controller.js        # register / login / logout / me / socket-token
@@ -52,6 +53,7 @@ meetsphere/
 │       │   ├── auth.routes.js            # /api/v1/auth/*
 │       │   └── meeting.routes.js         # /api/v1/meetings/* (all behind requireAuth)
 │       ├── utils/
+│       │   ├── tokens.js                 # session JWT + cookie helpers, one-minute socket token
 │       │   ├── ApiError.js               # thrown by controllers, caught by errorHandler
 │       │   ├── asyncHandler.js           # wraps async route handlers so rejections reach errorHandler
 │       │   └── generateMeetingCode.js    # "xyz-abcd-efg" style code generator
@@ -59,7 +61,8 @@ meetsphere/
 │           ├── auth.validator.js         # registerSchema, loginSchema
 │           └── meeting.validator.js      # meetingCodeParamSchema, historyQuerySchema, chatMessageSchema, mediaStateSchema
 └── frontend/
-    ├── .env.example           # VITE_API_URL
+    ├── .env.example           # VITE_API_URL, VITE_SOCKET_URL
+    ├── vercel.json            # SPA fallback + proxies /api to the Render backend
     ├── index.html
     ├── vite.config.js
     └── src/
@@ -67,7 +70,7 @@ meetsphere/
         ├── App.jsx             # React Router route table
         ├── App.css             # Landing + Home page styles (global, not module-scoped)
         ├── index.css           # App-wide resets/fonts
-        ├── config/api.js       # Reads VITE_API_URL, exported as the backend base URL
+        ├── config/api.js       # REST base URL (same-origin in production) + Socket.IO URL
         ├── context/AuthContext.jsx  # Axios client (withCredentials) + auth/meeting API calls
         ├── utils/withAuth.jsx  # HOC: shows a loader until /auth/me answers, redirects to /auth if logged out
         ├── pages/
@@ -102,6 +105,17 @@ meetsphere/
 ### Design note: why a new Participant record per join
 
 Each call to `/meetings/:code/join` inserts a new `Participant` document rather than upserting one. A user who leaves and rejoins gets two session records instead of one being silently reused. This makes join/leave timestamps accurate per-session (useful if you ever wanted "was X present at Y timestamp" or per-session duration), at the cost of a slightly bigger table for users who reconnect a lot — a reasonable tradeoff for a project this size, and a natural discussion point on data modeling tradeoffs.
+
+## XSS and CSRF
+
+Keeping the session token in an httpOnly cookie instead of `localStorage` protects it from **XSS**: injected script can't read it. The trade-off is that browsers attach cookies to requests automatically, which opens the door to **CSRF**: a page on another site making the user's browser send a request to this API with their cookie. Four layers stop that:
+
+1. **`SameSite=Lax` cookie (the main defence).** The browser only sends the cookie on cross-site requests that are top-level `GET` navigations, like clicking a link. A cross-site `POST`, whether from a form or `fetch`, arrives without it and gets `401`.
+2. **No `GET` endpoint changes state.** Creating, joining, leaving and ending meetings, and logging out, are all `POST`s, so the one cross-site request that does carry the cookie can't do anything.
+3. **JSON-only request bodies.** `app.js` registers `express.json()` and no form parser, so an HTML form on another site can't submit a usable body.
+4. **Credentialed CORS locked to `CLIENT_ORIGIN`.** A cross-site `fetch` with a JSON body triggers a CORS preflight that only the configured origin passes, and other sites can't read any response.
+
+The socket isn't exposed to cross-site WebSocket hijacking either: it doesn't authenticate with the cookie at all, but with a one-minute token that only this app's own page can fetch (other sites can't read the `/auth/socket-token` response because of CORS).
 
 ## Backend API contract
 
@@ -165,7 +179,7 @@ All four have Mongoose `timestamps: true`; `Meeting` and `Participant`/`Message`
 | --- | --- | --- |
 | `PORT` | `8000` | HTTP/Socket.IO listen port |
 | `MONGO_URI` | *(required)* | MongoDB connection string |
-| `CLIENT_ORIGIN` | `*` | Allowed CORS origin for both the Express API and Socket.IO |
+| `CLIENT_ORIGIN` | request origin (API), `*` (Socket.IO) | Allowed CORS origin for the Express API and Socket.IO. The API's CORS is credentialed, so set this to the real frontend URL in production |
 | `JWT_SECRET` | *(required)* | Signing secret for auth tokens — `server.js` refuses to start without it |
 | `COOKIE_SAMESITE` | `lax` in dev, `none` in production | `SameSite` for the auth cookie; `render.yaml` sets `lax` because Vercel proxies `/api` on the same site |
 
@@ -173,7 +187,8 @@ All four have Mongoose `timestamps: true`; `Meeting` and `Participant`/`Message`
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_API_URL` | `http://localhost:8000` | Base URL the frontend uses for both REST calls and the Socket.IO connection |
+| `VITE_API_URL` | `http://localhost:8000` in dev, `""` (same origin) in production builds | Base URL for REST calls; `/api/v1` is appended |
+| `VITE_SOCKET_URL` | falls back to `VITE_API_URL`, then the page's origin | Backend URL for Socket.IO. Needed in production, where REST goes through the Vercel proxy but the socket must connect to Render directly |
 
 ## Running locally
 
@@ -190,6 +205,11 @@ Or run each independently: `cd backend && npm install && npm run dev` / `cd fron
 
 `npm run build` in `frontend/` produces a static `dist/` (deploy anywhere that serves static files + rewrites all paths to `index.html`, since routing is client-side). The backend has no build step — `npm start` runs `src/server.js` directly with Node.
 
+## Deployment
+
+- **API → Render.** `render.yaml` is a blueprint for the `backend/` service (`npm ci` / `npm start`, health check on `/health`, generated `JWT_SECRET`, `COOKIE_SAMESITE=lax`). Set `MONGO_URI` and `CLIENT_ORIGIN` (the Vercel URL) in the Render dashboard.
+- **Frontend → Vercel.** `frontend/vercel.json` rewrites `/api/*` to the Render service, keeping the auth cookie first-party, and everything else to `index.html` for client-side routing. Set `VITE_SOCKET_URL` to the Render URL, since Vercel's proxy can't carry WebSockets.
+
 ## Testing
 
 ```bash
@@ -199,13 +219,14 @@ npm test
 
 `backend/tests/*.test.js` use Jest + Supertest against the exported Express `app` (from `src/app.js`, which never calls `.listen()`), with the Mongoose model layer replaced by `jest.unstable_mockModule` mocks. This keeps the suite fast and independent of a live database while still exercising the real HTTP layer: routing, validation middleware, auth middleware, controller logic, and error handling all run for real — only `User.findOne`, `Meeting.create`, etc. are stubbed. Covers: registration (success/duplicate/invalid input), login (success/wrong password/unknown user), the session cookie (httpOnly, never in the body, 7-day JWT, logout, `/me`, socket token), the auth middleware (missing/garbage cookie), meeting create/join/end (including the 404/410/403 edge cases), and paginated history.
 
-This was also manually verified end-to-end against a real local MongoDB instance (register → login → create meeting → join → leave → rejoin → end → history, plus a two-client Socket.IO run through join-room/chat-message/media-state/disconnect/end-meeting) while building it — worth knowing if you're deciding whether to trust the mocked suite alone or also want an integration pass. A natural next step for CI would be adding `mongodb-memory-server` for a true integration-test tier on top of these.
+This was also manually verified end-to-end against a real local MongoDB instance (register → login → create meeting → join → leave → rejoin → end → history, plus a two-client Socket.IO run through join-room/chat-message/media-state/disconnect/end-meeting, and a check that the 7-day session token is rejected at the socket handshake) while building it — worth knowing if you're deciding whether to trust the mocked suite alone or also want an integration pass. A natural next step for CI would be adding `mongodb-memory-server` for a true integration-test tier on top of these.
 
 ## Known gaps & tradeoffs
 
 Pre-existing, deliberate tradeoffs — listed so a future contributor (or agent) doesn't need to rediscover them by reading every file:
 
 - **JWTs aren't revocable.** They're stateless by design (no DB lookup on every request), which means there's no logout-everywhere/revoke-this-token capability — logout clears the cookie in that browser, but a copied token stays valid for the rest of its 7-day life. Short-lived access tokens with refresh tokens, or a server-side session store, would be the next step if this mattered in production.
+- **Body-less POSTs rely on SameSite alone.** `POST /meetings`, `/meetings/:code/join`, `/leave`, `/end` and `/auth/logout` take no body, so the JSON-only rule doesn't apply to them; `SameSite=Lax` is what stops a forged one. If `COOKIE_SAMESITE` were ever set to `none`, an `Origin` header check on write requests would be needed to keep CSRF protection airtight.
 - **Meeting codes are unauthenticated invite links, effectively.** Anyone who knows/guesses a meeting code and has *any* valid account can join — there's no host approval / waiting room / per-meeting allowlist.
 - **WebRTC uses the deprecated `addStream`/`onaddstream` API pair** instead of `addTrack`/`ontrack`. Still functional in current Chrome/Firefox/Safari but removed from the spec; migrating needs live multi-browser testing since track-level renegotiation behaves differently.
 - **STUN only, no TURN server** — calls between peers on restrictive/symmetric NATs may fail to establish a direct connection. Adding a TURN server (e.g. coturn, or a managed provider) would fix this.
